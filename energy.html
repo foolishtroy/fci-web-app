@@ -1,17 +1,16 @@
- <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Potential Well Physics - Simplified</title>
+    <title>Pendulum Energy Conservation</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://unpkg.com/lucide-react@latest"></script>
     <style>
-        body { background-color: #0f172a; color: white; margin: 0; overflow-x: hidden; }
-        /* Prevent text selection during drag */
+        body { background-color: #0f172a; color: white; margin: 0; overflow: hidden; }
         .no-select { user-select: none; -webkit-user-select: none; }
     </style>
 </head>
@@ -20,105 +19,60 @@
 
     <script type="text/babel">
         const { useState, useEffect, useRef, useMemo } = React;
-        const { Play, Pause, RotateCcw, Zap, Gauge } = lucide;
+        const { Play, Pause, RotateCcw, Zap, Gauge, MousePointer2 } = lucide;
 
         // --- CONSTANTS ---
-        const SCALE = 80;       // Pixels per meter
-        const K_CURVE = 0.5;    // Parabola shape y = 0.5 * x^2
-        const DT = 1/60;        // Time step
+        const PIVOT_X = 0;
+        const PIVOT_Y = 0;
+        const PIXELS_PER_METER = 200; 
+        const DT = 1/60; // Base time step
 
         const App = () => {
             // --- STATE ---
-            const [mass, setMass] = useState(5);
+            // Simulation parameters
+            const [length, setLength] = useState(1.5); // meters
+            const [mass, setMass] = useState(2.0);     // kg
             const [gravity, setGravity] = useState(9.8);
-            const [friction, setFriction] = useState(0.00);
+            const [friction, setFriction] = useState(0.0);
             const [slowMo, setSlowMo] = useState(false);
-            
-            // Simulation status
+            const [isPaused, setIsPaused] = useState(false);
+
+            // Interaction state
             const [isDragging, setIsDragging] = useState(false);
-            
-            // Physics State stored in Ref for performance (bypasses React render cycle for math)
+
+            // Physics state (Refs for performance)
             const physics = useRef({
-                x: -3,          // Horizontal position (meters)
-                vx: 0,          // Horizontal velocity
-                totalEnergy: 0, // Conserved quantity (E = PE + KE)
-                heat: 0         // Energy lost to friction
+                angle: Math.PI / 4, // Start at 45 degrees
+                velocity: 0,        // Angular velocity (rad/s)
+                accel: 0
             });
 
-            // Force a re-render for UI updates
+            // UI Update trigger
             const [tick, setTick] = useState(0);
             const reqRef = useRef();
-            const containerRef = useRef();
+            const svgRef = useRef();
 
             // --- PHYSICS ENGINE ---
             const updatePhysics = () => {
-                if (isDragging) return;
+                if (isDragging || isPaused) return;
 
                 const p = physics.current;
-                const timeStep = slowMo ? DT * 0.2 : DT;
-
-                // 1. Calculate current height and slope
-                // y = 0.5 * x^2  ->  dy/dx = x
-                const y = K_CURVE * p.x * p.x;
-                const slope = 2 * K_CURVE * p.x;
-                const angle = Math.atan(slope);
-
-                // 2. Forces
-                // Gravity component along the tangent
-                const gForce = -mass * gravity * Math.sin(angle);
                 
-                // Friction (simplified damping)
-                // We apply a small opposing force proportional to velocity
-                let fForce = 0;
-                if (friction > 0) {
-                    // Normal force approximation
-                    const normalForce = mass * gravity * Math.cos(angle);
-                    fForce = -friction * normalForce * p.vx; 
-                }
+                // Sub-stepping for stability (perform 4 calculations per frame)
+                const steps = 4;
+                const timeScale = slowMo ? 0.2 : 1.0;
+                const subDt = (DT * timeScale) / steps;
 
-                // 3. Integration (Semi-implicit Euler for stability)
-                // We need the effective mass along the curve to convert force to acceleration correctly
-                // However, for this visual demo, treating x-acceleration as F/m * cos(angle) is sufficient
-                // and visually convincing.
-                
-                const accTangent = (gForce + fForce) / mass;
-                
-                // Convert tangent acceleration to x-component
-                const ax = accTangent * Math.cos(angle);
+                for (let i = 0; i < steps; i++) {
+                    // Angular Acceleration: alpha = -(g/L) * sin(theta)
+                    // Damping is applied to velocity
+                    const forceGravity = -gravity / length * Math.sin(p.angle);
+                    p.accel = forceGravity;
 
-                // Update Velocity
-                p.vx += ax * timeStep;
-
-                // Update Position
-                p.x += p.vx * timeStep;
-
-                // 4. Energy Calculation (Post-update for UI)
-                const newY = K_CURVE * p.x * p.x;
-                const pe = mass * gravity * newY;
-                
-                // We calculate KE based on total speed (v_tangent), not just vx
-                // v_tangent = vx / cos(angle)
-                const vTangent = p.vx / Math.cos(angle);
-                const ke = 0.5 * mass * vTangent * vTangent;
-
-                // Track energy loss
-                const currentTotal = pe + ke;
-                
-                // If we initialized totalEnergy, the difference is heat
-                if (p.totalEnergy === 0) p.totalEnergy = currentTotal; // First frame init
-                
-                // If friction is on, Total E decreases, difference goes to heat
-                // But to keep the bar chart "full", we say Heat = InitialTotal - CurrentTotal
-                // However, since we are integrating forces, Total Energy naturally drifts slightly due to integration error.
-                // We will just calculate Heat as accumulated loss.
-                
-                if (friction > 0) {
-                    const energyLost = Math.abs(fForce * (Math.abs(vTangent) * timeStep));
-                    p.heat += energyLost;
-                    // Dampen velocity explicitly if stopped to prevent micro-jitter
-                    if (Math.abs(p.vx) < 0.01 && Math.abs(p.x) < 0.1) {
-                        p.vx = 0;
-                    }
+                    // Semi-implicit Euler integration
+                    p.velocity += p.accel * subDt;
+                    p.velocity *= (1 - friction * subDt); // Simple damping
+                    p.angle += p.velocity * subDt;
                 }
             };
 
@@ -126,212 +80,247 @@
             useEffect(() => {
                 const loop = () => {
                     updatePhysics();
-                    setTick(t => t + 1); // Trigger React Render
+                    setTick(t => t + 1); // Force React render
                     reqRef.current = requestAnimationFrame(loop);
                 };
                 reqRef.current = requestAnimationFrame(loop);
                 return () => cancelAnimationFrame(reqRef.current);
-            }, [isDragging, mass, gravity, friction, slowMo]);
+            }, [isDragging, isPaused, length, mass, gravity, friction, slowMo]);
 
-
-            // --- INTERACTION ---
-            const handlePointer = (e) => {
-                if (!containerRef.current) return;
+            // --- INTERACTION HANDLERS ---
+            const getAngleFromEvent = (e) => {
+                if (!svgRef.current) return 0;
+                const rect = svgRef.current.getBoundingClientRect();
                 
-                // Get X coordinate relative to center of SVG
-                const rect = containerRef.current.getBoundingClientRect();
+                // Center of SVG is the pivot (because of viewBox setup)
+                const centerX = rect.left + rect.width / 2;
+                const centerY = rect.top + (rect.height * 0.2); // Pivot is at y=0 in SVG, which is 20% down in viewBox
+
                 const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-                const relX = clientX - rect.left - (rect.width / 2);
-                
-                // Convert pixels to meters
-                let metersX = relX / SCALE;
-                
-                // Clamp boundaries
-                metersX = Math.max(-4, Math.min(4, metersX));
+                const clientY = e.touches ? e.touches[0].clientY : e.clientY;
 
-                // Reset Physics State
-                const y = K_CURVE * metersX * metersX;
-                const pe = mass * gravity * y;
+                // Calculate angle relative to vertical (positive Y is down)
+                const dx = clientX - centerX;
+                const dy = clientY - centerY;
                 
-                physics.current = {
-                    x: metersX,
-                    vx: 0,
-                    totalEnergy: pe, // At rest, Total = PE
-                    heat: 0
-                };
+                // Math.atan2(y, x) gives angle from X axis. 
+                // We want angle from Y axis (vertical). 
+                // So we use atan2(x, y).
+                return Math.atan2(dx, dy);
             };
 
             const startDrag = (e) => {
                 setIsDragging(true);
-                handlePointer(e);
+                const newAngle = getAngleFromEvent(e);
+                physics.current.angle = newAngle;
+                physics.current.velocity = 0; // Reset velocity on grab
             };
-            
-            const moveDrag = (e) => {
-                if (isDragging) handlePointer(e);
+
+            const onDrag = (e) => {
+                if (!isDragging) return;
+                const newAngle = getAngleFromEvent(e);
+                physics.current.angle = newAngle;
+                physics.current.velocity = 0;
             };
-            
+
             const endDrag = () => {
                 setIsDragging(false);
             };
 
-
-            // --- RENDER HELPERS ---
+            // --- CALCULATIONS FOR RENDER ---
             const p = physics.current;
-            const y = K_CURVE * p.x * p.x;
             
-            // Calculate energies for UI
-            const pe = mass * gravity * y;
-            const slope = 2 * K_CURVE * p.x;
-            const angle = Math.atan(slope);
-            const vTangent = p.vx / Math.cos(angle);
-            const ke = 0.5 * mass * vTangent * vTangent;
-            const total = pe + ke + p.heat; // Should be roughly constant if integration is good
+            // Position
+            const bobX = Math.sin(p.angle) * length * PIXELS_PER_METER;
+            const bobY = Math.cos(p.angle) * length * PIXELS_PER_METER;
 
-            // SVG Path Generation
-            const pathData = useMemo(() => {
-                let d = "M -400 " + (-(K_CURVE * (-5)*(-5) * SCALE)); 
-                for(let i = -5; i <= 5; i+=0.1) {
-                    const py = -(K_CURVE * i * i * SCALE);
-                    const px = i * SCALE;
-                    d += ` L ${px} ${py}`;
-                }
-                return d;
-            }, []);
+            // Energy Calculations
+            // h = L - Lcos(theta) (Height relative to lowest point)
+            const h = length * (1 - Math.cos(p.angle));
+            
+            // Tangential velocity v = r * omega
+            const v = length * p.velocity;
+
+            const pe = mass * gravity * h;
+            const ke = 0.5 * mass * v * v;
+            const totalEnergy = pe + ke;
+
+            // Max energy for scaling bars (prevent jittering bars by using a smoothed max or fixed max based on start)
+            // For this demo, we'll scale based on current Total to fill the bar, or a fixed reasonable max
+            const maxDisplayEnergy = Math.max(totalEnergy, 1); 
 
             return (
-                <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col font-sans no-select">
+                <div className="h-screen w-screen bg-slate-900 text-slate-100 flex flex-col md:flex-row overflow-hidden font-sans no-select">
                     
-                    {/* 1. VISUALIZATION CANVAS */}
-                    <div className="relative flex-grow bg-slate-950 overflow-hidden border-b border-slate-800"
-                         style={{ minHeight: '50vh' }}>
+                    {/* LEFT: SIMULATION VIEW */}
+                    <div className="relative flex-grow h-1/2 md:h-full bg-slate-950 border-b md:border-b-0 md:border-r border-slate-800">
                         
-                        <div className="absolute top-4 left-0 right-0 text-center opacity-50 pointer-events-none">
-                            <h1 className="text-2xl font-bold">Potential Well</h1>
-                            <p className="text-sm">Drag to release</p>
+                        {/* Overlay Controls */}
+                        <div className="absolute top-4 left-4 z-10 flex gap-2">
+                             <button 
+                                onClick={() => setIsPaused(!isPaused)}
+                                className="p-2 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-lg text-white transition-colors"
+                            >
+                                {isPaused ? <Play size={20} fill="currentColor" /> : <Pause size={20} fill="currentColor" />}
+                            </button>
+                            <button 
+                                onClick={() => {
+                                    physics.current = { angle: 0, velocity: 0, accel: 0 };
+                                    setTick(t => t+1);
+                                }}
+                                className="p-2 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-lg text-white transition-colors"
+                            >
+                                <RotateCcw size={20} />
+                            </button>
+                        </div>
+
+                        <div className="absolute top-4 right-4 z-10 text-right opacity-60 pointer-events-none">
+                            <h1 className="text-xl font-bold tracking-tight">Simple Pendulum</h1>
+                            <p className="text-xs text-slate-400">Drag bob to release</p>
                         </div>
 
                         {/* Interactive Area */}
                         <div 
-                            ref={containerRef}
-                            className="absolute inset-0 flex items-center justify-center cursor-crosshair touch-none"
+                            className="w-full h-full cursor-grab active:cursor-grabbing touch-none"
                             onMouseDown={startDrag}
-                            onMouseMove={moveDrag}
+                            onMouseMove={onDrag}
                             onMouseUp={endDrag}
                             onMouseLeave={endDrag}
                             onTouchStart={startDrag}
-                            onTouchMove={moveDrag}
+                            onTouchMove={onDrag}
                             onTouchEnd={endDrag}
                         >
-                            <svg viewBox="-400 -400 800 500" className="w-full h-full" preserveAspectRatio="xMidYMid slice">
-                                {/* Grid */}
-                                <defs>
-                                    <pattern id="grid" width="80" height="80" patternUnits="userSpaceOnUse">
-                                        <path d="M 80 0 L 0 0 0 80" fill="none" stroke="#1e293b" strokeWidth="2"/>
-                                    </pattern>
-                                </defs>
-                                <rect x="-500" y="-1000" width="1000" height="2000" fill="url(#grid)" />
+                            <svg ref={svgRef} viewBox="-300 -50 600 500" className="w-full h-full" preserveAspectRatio="xMidYMin meet">
+                                {/* Ceiling / Pivot Support */}
+                                <line x1="-100" y1="0" x2="100" y2="0" stroke="#475569" strokeWidth="4" strokeLinecap="round" />
+                                <circle cx="0" cy="0" r="6" fill="#94a3b8" />
 
-                                {/* The Well Curve */}
-                                <path d={pathData} fill="none" stroke="#475569" strokeWidth="6" strokeLinecap="round" />
+                                {/* Reference Line (Vertical) */}
+                                <line x1="0" y1="0" x2="0" y2="400" stroke="#334155" strokeWidth="2" strokeDasharray="5,5" />
 
-                                {/* The Ball */}
-                                <g transform={`translate(${p.x * SCALE}, ${-(y * SCALE)})`}>
-                                    <circle r="20" fill="#38bdf8" stroke="white" strokeWidth="2" />
-                                    {/* Velocity Vector (Visual Aid) */}
+                                {/* The Pendulum String */}
+                                <line 
+                                    x1="0" y1="0" 
+                                    x2={bobX} y2={bobY} 
+                                    stroke="#cbd5e1" 
+                                    strokeWidth="3" 
+                                />
+
+                                {/* The Bob */}
+                                <g transform={`translate(${bobX}, ${bobY})`}>
+                                    <circle r={20 + (mass * 2)} fill="#38bdf8" stroke="white" strokeWidth="2" className="shadow-lg" />
+                                    {/* Velocity Vector */}
                                     <line 
                                         x1="0" y1="0" 
-                                        x2={p.vx * 10} y2={p.vx * slope * 10} 
-                                        stroke="#ef4444" strokeWidth="3" opacity="0.6" 
+                                        x2={Math.cos(p.angle) * v * 10} 
+                                        y2={-Math.sin(p.angle) * v * 10} 
+                                        stroke="#10b981" strokeWidth="3" opacity="0.8"
                                     />
                                 </g>
+
+                                {/* Angle Arc */}
+                                <path 
+                                    d={`M 0 60 A 60 60 0 0 ${p.angle < 0 ? 0 : 1} ${Math.sin(p.angle)*60} ${Math.cos(p.angle)*60}`}
+                                    fill="none" stroke="#64748b" strokeWidth="2" opacity="0.5"
+                                />
                             </svg>
                         </div>
                     </div>
 
-                    {/* 2. DASHBOARD (Separated) */}
-                    <div className="bg-slate-900 p-6 grid grid-cols-1 lg:grid-cols-2 gap-8 max-w-6xl mx-auto w-full">
+                    {/* RIGHT: DATA & CONTROLS */}
+                    <div className="w-full md:w-96 bg-slate-900 flex flex-col border-l border-slate-800 overflow-y-auto">
                         
-                        {/* LEFT: Energy Bars */}
-                        <div className="bg-slate-800/50 p-5 rounded-xl border border-slate-700">
+                        {/* 1. Energy Visualization */}
+                        <div className="p-6 border-b border-slate-800 bg-slate-800/30">
                             <div className="flex items-center gap-2 mb-6 text-slate-400 uppercase text-xs font-bold tracking-wider">
-                                <Zap size={16} /> Energy Conservation
+                                <Zap size={16} /> Energy Conversion
                             </div>
+
+                            <div className="flex flex-col gap-6">
+                                {/* Combined Bar */}
+                                <div className="flex h-64 w-full gap-4 items-end justify-center">
+                                    {/* PE Bar */}
+                                    <div className="w-16 bg-slate-800 rounded-t-lg relative group">
+                                        <div 
+                                            className="absolute bottom-0 w-full bg-blue-500 rounded-t-lg transition-all duration-75 flex items-end justify-center"
+                                            style={{ height: `${(pe / Math.max(0.1, totalEnergy)) * 100}%` }}
+                                        >
+                                            <span className="text-xs font-bold text-white mb-2 drop-shadow-md">PE</span>
+                                        </div>
+                                        <div className="absolute -top-6 w-full text-center text-xs text-blue-400 font-mono">
+                                            {pe.toFixed(1)}J
+                                        </div>
+                                    </div>
+
+                                    {/* KE Bar */}
+                                    <div className="w-16 bg-slate-800 rounded-t-lg relative group">
+                                        <div 
+                                            className="absolute bottom-0 w-full bg-emerald-500 rounded-t-lg transition-all duration-75 flex items-end justify-center"
+                                            style={{ height: `${(ke / Math.max(0.1, totalEnergy)) * 100}%` }}
+                                        >
+                                            <span className="text-xs font-bold text-white mb-2 drop-shadow-md">KE</span>
+                                        </div>
+                                        <div className="absolute -top-6 w-full text-center text-xs text-emerald-400 font-mono">
+                                            {ke.toFixed(1)}J
+                                        </div>
+                                    </div>
+
+                                    {/* Total Bar (Reference) */}
+                                    <div className="w-8 bg-slate-800 rounded-t-lg relative opacity-50 border border-slate-600 border-dashed">
+                                        <div className="absolute bottom-0 w-full h-full flex items-end justify-center">
+                                        </div>
+                                        <div className="absolute -top-6 w-full text-center text-xs text-slate-400 font-mono">
+                                            Tot
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="text-center text-xs text-slate-500">
+                                    Total Energy: {totalEnergy.toFixed(2)} J
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* 2. Controls */}
+                        <div className="p-6 space-y-8 flex-grow">
+                            <div className="flex items-center gap-2 text-slate-400 uppercase text-xs font-bold tracking-wider">
+                                <Gauge size={16} /> Parameters
+                            </div>
+
+                            <InputSlider 
+                                label="String Length" 
+                                value={length} 
+                                set={setLength} 
+                                min={0.5} max={2.0} step={0.1} unit="m" 
+                            />
                             
-                            <div className="space-y-6">
-                                {/* Potential */}
-                                <div>
-                                    <div className="flex justify-between text-sm mb-1">
-                                        <span className="text-blue-400">Potential (PE)</span>
-                                        <span className="font-mono">{pe.toFixed(0)} J</span>
-                                    </div>
-                                    <div className="h-4 bg-slate-900 rounded-full overflow-hidden">
-                                        <div className="h-full bg-blue-500 transition-all duration-75" 
-                                             style={{ width: `${(pe / Math.max(1, total)) * 100}%` }} />
-                                    </div>
-                                </div>
+                            <InputSlider 
+                                label="Bob Mass" 
+                                value={mass} 
+                                set={setMass} 
+                                min={0.5} max={10.0} step={0.5} unit="kg" 
+                            />
+                            
+                            <InputSlider 
+                                label="Gravity" 
+                                value={gravity} 
+                                set={setGravity} 
+                                min={1.6} max={20.0} step={0.1} unit="m/s²" 
+                            />
 
-                                {/* Kinetic */}
-                                <div>
-                                    <div className="flex justify-between text-sm mb-1">
-                                        <span className="text-emerald-400">Kinetic (KE)</span>
-                                        <span className="font-mono">{ke.toFixed(0)} J</span>
-                                    </div>
-                                    <div className="h-4 bg-slate-900 rounded-full overflow-hidden">
-                                        <div className="h-full bg-emerald-500 transition-all duration-75" 
-                                             style={{ width: `${(ke / Math.max(1, total)) * 100}%` }} />
-                                    </div>
-                                </div>
+                            <InputSlider 
+                                label="Friction (Air Resistance)" 
+                                value={friction} 
+                                set={setFriction} 
+                                min={0.0} max={0.5} step={0.01} unit="" 
+                            />
 
-                                {/* Thermal */}
-                                <div>
-                                    <div className="flex justify-between text-sm mb-1">
-                                        <span className="text-orange-400">Thermal (Heat)</span>
-                                        <span className="font-mono">{p.heat.toFixed(0)} J</span>
-                                    </div>
-                                    <div className="h-4 bg-slate-900 rounded-full overflow-hidden">
-                                        <div className="h-full bg-orange-500 transition-all duration-75" 
-                                             style={{ width: `${(p.heat / Math.max(1, total)) * 100}%` }} />
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div className="mt-6 pt-4 border-t border-slate-700 flex justify-between text-slate-500 text-sm font-mono">
-                                <span>Total Energy</span>
-                                <span>{total.toFixed(0)} J</span>
-                            </div>
+                            <button 
+                                onClick={() => setSlowMo(!slowMo)}
+                                className={`w-full py-3 rounded-lg font-medium border transition-colors ${slowMo ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'}`}
+                            >
+                                {slowMo ? "Slow Motion: ON" : "Slow Motion: OFF"}
+                            </button>
                         </div>
-
-                        {/* RIGHT: Controls */}
-                        <div className="flex flex-col gap-6">
-                            <div className="bg-slate-800/50 p-5 rounded-xl border border-slate-700 space-y-6">
-                                <div className="flex items-center gap-2 mb-2 text-slate-400 uppercase text-xs font-bold tracking-wider">
-                                    <Gauge size={16} /> Parameters
-                                </div>
-
-                                <InputSlider label="Gravity" value={gravity} set={setGravity} min={1} max={20} step={0.5} unit="m/s²" />
-                                <InputSlider label="Mass" value={mass} set={setMass} min={1} max={50} step={1} unit="kg" />
-                                <InputSlider label="Friction" value={friction} set={setFriction} min={0} max={0.5} step={0.01} unit="coeff" />
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-4">
-                                <button 
-                                    onClick={() => setSlowMo(!slowMo)}
-                                    className={`py-3 rounded-lg font-medium border transition-colors ${slowMo ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'}`}
-                                >
-                                    {slowMo ? "Slow Motion ON" : "Slow Motion OFF"}
-                                </button>
-                                <button 
-                                    onClick={() => {
-                                        physics.current = { x: 0, vx: 0, totalEnergy: 0, heat: 0 };
-                                        setTick(t => t+1);
-                                    }}
-                                    className="py-3 rounded-lg font-medium bg-slate-700 hover:bg-slate-600 border border-slate-600 text-white transition-colors flex items-center justify-center gap-2"
-                                >
-                                    <RotateCcw size={18} /> Reset
-                                </button>
-                            </div>
-                        </div>
-
                     </div>
                 </div>
             );
@@ -347,7 +336,7 @@
                 <input 
                     type="range" min={min} max={max} step={step} value={value}
                     onChange={e => set(parseFloat(e.target.value))}
-                    className="w-full h-2 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-sky-500"
+                    className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-sky-500"
                 />
             </div>
         );
